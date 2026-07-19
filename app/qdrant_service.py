@@ -32,9 +32,15 @@ class QdrantService:
     """Manages the local Qdrant vector collection."""
 
     def __init__(self):
-        self.client = QdrantClient(path=settings.QDRANT_PATH)
+        self._client = None
         self.collection = settings.QDRANT_COLLECTION
         self.dimension = settings.EMBEDDING_DIMENSION
+
+    @property
+    def client(self) -> QdrantClient:
+        if self._client is None:
+            self._client = QdrantClient(path=settings.QDRANT_PATH)
+        return self._client
 
     def initialize_collection(self):
         """
