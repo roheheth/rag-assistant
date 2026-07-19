@@ -1,0 +1,31 @@
+# ── Web Framework ─────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.12
+
+# ── Database ───────────────────────────────────────────────────────
+motor>=3.6.0
+pymongo>=4.9.0
+qdrant-client>=1.18.0
+
+# ── Document Parsing ───────────────────────────────────────────────
+PyMuPDF>=1.27.0          # PDF extraction (replaces PyPDF2)
+mammoth>=1.11.0          # Word/DOCX extraction
+python-calamine>=0.7.0   # Excel parsing (Rust-powered)
+
+# ── AI / ML ────────────────────────────────────────────────────────
+huggingface-hub>=0.25.0
+numpy>=1.26.0
+rank-bm25>=0.2.2
+langchain-text-splitters>=0.3.0
+
+# ── Config & Settings ─────────────────────────────────────────────
+pydantic-settings>=2.5.0
+python-dotenv>=1.0.1
+
+# ── Frontend ──────────────────────────────────────────────────────
+streamlit>=1.58.0
+requests>=2.31.0
+
+# ── Profiling (optional, toggle USE_PYINSTRUMENT in rag_pipeline.py) ──
+pyinstrument>=4.6.0

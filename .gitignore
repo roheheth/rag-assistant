@@ -1,0 +1,40 @@
+# ── Virtual Environment ───────────────────────────────────────────
+venv/
+vevn/
+.venv/
+
+# ── Secrets & Config ──────────────────────────────────────────────
+.env
+
+# ── Qdrant local vector store ─────────────────────────────────────
+qdrant_storage/
+
+# ── Uploads & Temp Files ──────────────────────────────────────────
+uploads/
+*.pdf
+*.docx
+*.xlsx
+*.xls
+*.doc
+test.xlsx
+test_upload.py
+
+# ── Profiling Output ──────────────────────────────────────────────
+profiles/
+
+# ── Python Cache ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── IDE ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── OS ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
