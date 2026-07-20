@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 RAG Assistant
+# RAG Assistant
 
 **A production-grade, hybrid-search Retrieval-Augmented Generation (RAG) application built with FastAPI, Qdrant, MongoDB, and Streamlit.**
 
@@ -20,20 +20,20 @@ Upload documents, ask questions, and receive answers grounded in your own files 
 
 | Feature | Description |
 |---|---|
-| 📄 **Multi-format Ingestion** | Upload PDF, Word (`.docx`), and Excel (`.xlsx`) files |
-| ⚡ **Async Background Processing** | UI unlocks instantly on upload; indexing runs silently in the background |
-| 🔍 **Hybrid Search** | BM25 keyword search + Qdrant vector search, fused with Reciprocal Rank Fusion (RRF) |
-| 🧩 **Parent-Child Chunking** | Small child chunks for precision retrieval, large parent chunks for rich LLM context |
-| 🎯 **MD5 Deduplication** | Uploading the same file twice is detected and skipped in under 0.01 seconds |
-| 🧠 **Query Intent Router** | Zero-shot classifier routes questions to either the knowledge base or conversational mode |
-| 💬 **Streaming Answers** | LLM responses stream token-by-token via SSE for a ChatGPT-like experience |
-| 🧹 **Auto Text Compression** | Structural cleaning removes page numbers, duplicate spaces, and empty lines on ingestion |
-| 📊 **Detailed Telemetry Logs** | Every pipeline stage (extraction, cleaning, chunking, embedding) is timed and logged |
-| 🔒 **Externalised Config** | All secrets live in `.env`, never in source code |
+| **Multi-format Ingestion** | Upload PDF, Word (`.docx`), and Excel (`.xlsx`) files |
+| **Async Background Processing** | UI unlocks instantly on upload; indexing runs silently in the background |
+| **Hybrid Search** | BM25 keyword search + Qdrant vector search, fused with Reciprocal Rank Fusion (RRF) |
+| **Parent-Child Chunking** | Small child chunks for precision retrieval, large parent chunks for rich LLM context |
+| **MD5 Deduplication** | Uploading the same file twice is detected and skipped in under 0.01 seconds |
+| **Query Intent Router** | Zero-shot classifier routes questions to either the knowledge base or conversational mode |
+| **Streaming Answers** | LLM responses stream token-by-token via SSE for a ChatGPT-like experience |
+| **Auto Text Compression** | Structural cleaning removes page numbers, duplicate spaces, and empty lines on ingestion |
+| **Detailed Telemetry Logs** | Every pipeline stage (extraction, cleaning, chunking, embedding) is timed and logged |
+| **Externalised Config** | All secrets live in `.env`, never in source code |
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -87,7 +87,7 @@ User Question
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.11+
@@ -225,17 +225,17 @@ All settings are loaded from `.env`. See `.env.example` for the full list.
 When you upload a file, the following steps run **asynchronously in the background**:
 
 ```
-1. 📂 File saved temporarily to disk
-2. 🔑 MD5 hash calculated → duplicate check in MongoDB
+1. File saved temporarily to disk
+2. MD5 hash calculated → duplicate check in MongoDB
    └── If duplicate → skip everything, finish in 0.01s
-3. ⚡ Text extraction (PyMuPDF / Mammoth / Calamine)
-4. 🧹 Structural cleaning (strip page numbers, collapse whitespace)
-5. 🧩 Parent-Child chunking (LangChain RecursiveCharacterTextSplitter)
-6. 🤖 Embedding via BAAI/bge-small (concurrent batches of 8)
-7. 💾 Store:
+3. Text extraction (PyMuPDF / Mammoth / Calamine)
+4. Structural cleaning (strip page numbers, collapse whitespace)
+5. Parent-Child chunking (LangChain RecursiveCharacterTextSplitter)
+6. Embedding via BAAI/bge-small (concurrent batches of 8)
+7. Store:
    ├── MongoDB: document metadata + parent chunks + child text/tokens
    └── Qdrant: child chunk embeddings (384-dim HNSW indexed)
-8. 🗑️ Temporary file deleted
+8. Temporary file deleted
 ```
 
 ---
@@ -249,12 +249,6 @@ When you upload a file, the following steps run **asynchronously in the backgrou
 | Ask out-of-scope question | Intent router answers conversationally |
 | Force document question on off-topic | Returns "not found in documents" |
 | Upload 3 files simultaneously | All processed concurrently via async event loop |
-
----
-
-## 📄 License
-
-MIT License — feel free to use, modify, and distribute.
 
 ---
 
