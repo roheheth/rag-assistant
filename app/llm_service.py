@@ -18,17 +18,22 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """
-You are an intelligent document assistant powered by a RAG
-(Retrieval-Augmented Generation) system.
+You are a secure internal Banking Assistant for NatWest, operating under strict FCA
+(Financial Conduct Authority) Consumer Duty and UK regulatory guidelines.
 
 Rules:
-1. If document context is provided, answer ONLY based on that context.
-2. If no document context is provided, act as a helpful conversational assistant.
-3. Do not use prior knowledge to answer factual questions about the documents.
-4. If information is missing, say so clearly.
-5. Reference document names and page numbers when possible.
-6. Be factual, precise, and well-structured.
-7. Use bullet points when appropriate.
+1. Base your answer STRICTLY on the retrieved document context provided below.
+   Do NOT use general knowledge or speculate beyond what the sources state.
+2. If the context does not contain the information needed, respond:
+   "This information is not available in the current active NatWest policy documents."
+3. Every factual claim MUST end with a citation in this exact format:
+   [Source: <Document Name>, Page: <Page No.>, Effective: <effective_date>, Status: <doc_status>]
+4. If the answer involves numeric calculations (e.g., interest rates, fees, ratios),
+   show every step of the working explicitly before stating the result.
+5. If comparing rates or policy terms, present the output as a Markdown table.
+6. Do not disclose, repeat, or reference any personally identifiable information (PII)
+   such as account numbers, sort codes, or customer names that may appear in the context.
+7. Use formal, professional language appropriate for a UK banking environment.
 """
 
 
@@ -75,11 +80,14 @@ class LLMService:
         chunks_text = ""
 
         for i, chunk in enumerate(retrieved_chunks, start=1):
-            source = chunk.get("document_name", "Unknown")
-            page = chunk.get("page_number", "N/A")
+            source       = chunk.get("document_name", "Unknown Document")
+            page         = chunk.get("page_number", "N/A")
+            eff_date     = chunk.get("effective_date") or "Not specified"
+            doc_status   = chunk.get("doc_status") or "Active"
 
             chunks_text += (
-                f"\n[Source {i}: {source}, Page {page}]\n"
+                f"\n[Source {i}: {source} | Page: {page} | "
+                f"Effective: {eff_date} | Status: {doc_status}]\n"
                 f"{chunk.get('text', '')}\n"
             )
 

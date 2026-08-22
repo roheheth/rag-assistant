@@ -14,8 +14,8 @@ Endpoints:
 import os
 import uuid
 import shutil
-from datetime import datetime, timezone
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from datetime import datetime, date, timezone
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Query
 from contextlib import asynccontextmanager
 from app.config import settings
 from app.database import connect_to_mongo, close_mongo_connection, get_db
@@ -30,7 +30,7 @@ from app.models import (
     ChatInfo,
     StatsResponse,
 )
-from typing import List
+from typing import List, Optional
 import logging
 
 logging.basicConfig(
@@ -77,7 +77,12 @@ async def root():
 @app.post("/api/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    # ── Banking Compliance Metadata ──────────────────────────────────
+    clearance_level: str = Query(default="Internal", description="Document clearance level: Public, Internal, Restricted"),
+    department: str = Query(default="Retail", description="Originating department: Retail, Lending, Compliance, Wealth"),
+    effective_date: Optional[str] = Query(default=None, description="Date document becomes active (ISO: YYYY-MM-DD)"),
+    expiry_date: Optional[str] = Query(default=None, description="Date document expires (ISO: YYYY-MM-DD)"),
 ):
     """Upload and process a document into the knowledge base in the background."""
     if not file.filename or not file.filename.lower().endswith((".pdf", ".xlsx", ".xls", ".docx", ".doc")):
@@ -85,6 +90,10 @@ async def upload_document(
             status_code=400,
             detail="Only PDF, Excel, and Word files are supported.",
         )
+
+    # Default dates if not supplied
+    eff_date = effective_date or date.today().isoformat()     # e.g. "2026-08-22"
+    exp_date = expiry_date or "2099-12-31"
 
     document_id = str(uuid.uuid4())
     file_path = os.path.join(settings.UPLOAD_DIR, f"{document_id}_{file.filename}")
@@ -95,7 +104,7 @@ async def upload_document(
             shutil.copyfileobj(file.file, f)
 
         db = get_db()
-        
+
         # Create an initial document metadata entry with "processing" status
         doc_record = {
             "document_id": document_id,
@@ -106,6 +115,12 @@ async def upload_document(
             "file_hash": "",
             "status": "processing",
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            # Banking compliance metadata
+            "clearance_level": clearance_level,
+            "department":      department,
+            "effective_date":  eff_date,
+            "expiry_date":     exp_date,
+            "doc_status":      "Active",
         }
         await db.documents.insert_one(doc_record)
 
@@ -114,7 +129,11 @@ async def upload_document(
             document_processor.process_document_async,
             file_path,
             file.filename,
-            document_id
+            document_id,
+            clearance_level,
+            department,
+            eff_date,
+            exp_date,
         )
 
         return DocumentUploadResponse(
@@ -122,7 +141,12 @@ async def upload_document(
             filename=file.filename,
             chunk_count=0,
             total_pages=0,
-            status="processing"
+            status="processing",
+            clearance_level=clearance_level,
+            department=department,
+            effective_date=eff_date,
+            expiry_date=exp_date,
+            doc_status="Active",
         )
 
     except Exception as e:
@@ -176,6 +200,8 @@ async def ask_question(request: QuestionRequest):
             rag_pipeline.ask_stream(
                 question=request.question.strip(),
                 chat_id=request.chat_id,
+                user_role=request.user_role,
+                user_department=request.user_department,
             ),
             media_type="text/event-stream"
         )

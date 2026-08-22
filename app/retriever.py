@@ -13,11 +13,12 @@ O(log N) instead of O(N), making it scalable to hundreds of thousands of chunks.
 
 import re
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Optional
 from rank_bm25 import BM25Okapi
 from app.database import get_db
 from app.embeddings import embedding_service
 from app.qdrant_service import qdrant_service
+from app.pii_utils import redact_query
 from app.config import settings
 import logging
 
@@ -32,10 +33,16 @@ class Retriever:
         return re.findall(r'\w+', text.lower())
 
     async def search(
-        self, query: str, top_k: int = None
+        self,
+        query: str,
+        top_k: int = None,
+        user_role: str = "Admin",
+        user_department: Optional[str] = None,
     ) -> List[Dict]:
         """
         Find the top-k most relevant Parent chunks using Hybrid Search (BM25 + Qdrant + RRF).
+        Applies PII redaction to the query before embedding.
+        Applies RBAC and temporal filters via Qdrant payload pre-filtering.
         """
         if top_k is None:
             top_k = settings.TOP_K
@@ -43,16 +50,19 @@ class Retriever:
         db = get_db()
         candidate_count = min(top_k * 4, 100)
 
-        # ── 1. Embed the Query ─────────────────────────────────────
+        # ── 1. Redact PII from query, then embed ───────────────────
+        safe_query = redact_query(query)
         query_embedding = await embedding_service.get_embedding(
-            query, is_query=True
+            safe_query, is_query=True
         )
 
-        # ── 2. Vector Search via Qdrant (ANN, off-server) ──────────
+        # ── 2. Vector Search via Qdrant (ANN + RBAC + Date filter) ─
         # Returns [(chunk_id, score)] sorted by descending cosine similarity
         qdrant_hits = qdrant_service.search_vectors(
             query_vector=query_embedding,
             top_k=candidate_count,
+            user_role=user_role,
+            user_department=user_department,
         )
 
         if not qdrant_hits:

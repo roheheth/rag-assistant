@@ -25,10 +25,16 @@ class RAGPipeline:
     """Orchestrates the full RAG flow from question to answer."""
 
     async def ask_stream(
-        self, question: str, chat_id: Optional[str] = None
+        self,
+        question: str,
+        chat_id: Optional[str] = None,
+        user_role: str = "Admin",
+        user_department: Optional[str] = None,
     ):
         """
         Process a user question and stream the response.
+        RBAC context (user_role, user_department) is used to pre-filter
+        retrieved chunks to only those the user is permitted to access.
         """
         import json
         import os
@@ -63,9 +69,13 @@ class RAGPipeline:
         # ── 3. Query Router (Zero-Shot Classification) ───────────────
         intent = await llm_service.classify_intent(question)
 
-        # ── 4. Retrieve relevant chunks (Conditional) ────────────────
+        # ── 4. Retrieve relevant chunks (Conditional) ──────────────────
         if intent == "question about uploaded documents":
-            retrieved_chunks = await retriever.search(question)
+            retrieved_chunks = await retriever.search(
+                question,
+                user_role=user_role,
+                user_department=user_department,
+            )
             if not retrieved_chunks:
                 logger.warning("No relevant chunks found for query")
                 # Yield metadata

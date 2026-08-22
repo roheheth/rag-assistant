@@ -19,6 +19,7 @@ from app.config import settings
 from app.embeddings import embedding_service
 from app.database import get_db
 from app.qdrant_service import qdrant_service
+from app.pii_utils import redact_pii
 import logging
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,15 @@ class DocumentProcessor:
         }
 
     async def process_document_async(
-        self, file_path: str, filename: str, document_id: str
+        self,
+        file_path: str,
+        filename: str,
+        document_id: str,
+        # ── Banking Compliance Metadata ──────────────────────────────
+        clearance_level: str = "Internal",
+        department: str = "Retail",
+        effective_date: str = "",
+        expiry_date: str = "2099-12-31",
     ):
         """
         Background task execution of the ingestion pipeline with detailed logging.
@@ -403,12 +412,20 @@ class DocumentProcessor:
             clean_start = time.time()
             for page in pages:
                 page["text"] = self._clean_extracted_text(page["text"])
-            
+
             clean_char_count = sum(len(p["text"]) for p in pages)
             char_reduction = ((raw_char_count - clean_char_count) / raw_char_count) * 100 if raw_char_count > 0 else 0
             logger.info(
                 f"🧹 [Cleaning Complete] Compressed characters: {clean_char_count} | "
                 f"Reduction: {char_reduction:.1f}% | Time: {(time.time() - clean_start)*1000:.2f} ms"
+            )
+
+            # 4b. PII Redaction (UK Banking Compliance)
+            pii_start = time.time()
+            for page in pages:
+                page["text"] = redact_pii(page["text"])
+            logger.info(
+                f"🔒 [PII Redaction Complete] Time: {(time.time() - pii_start)*1000:.2f} ms"
             )
 
             # 5. Build Parent-Child Chunks
@@ -440,12 +457,17 @@ class DocumentProcessor:
             # 7a — Parent chunks → MongoDB (full text for LLM context)
             parent_records = [
                 {
-                    "parent_id": parent["parent_id"],
-                    "document_id": document_id,
-                    "document_name": filename,
-                    "text": parent["text"],
-                    "page_number": parent["page_number"],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "parent_id":       parent["parent_id"],
+                    "document_id":     document_id,
+                    "document_name":   filename,
+                    "text":            parent["text"],
+                    "page_number":     parent["page_number"],
+                    "clearance_level": clearance_level,
+                    "department":      department,
+                    "effective_date":  effective_date,
+                    "expiry_date":     expiry_date,
+                    "doc_status":      "Active",
+                    "created_at":      datetime.now(timezone.utc).isoformat(),
                 }
                 for parent in parents
             ]
@@ -454,14 +476,19 @@ class DocumentProcessor:
             # 7b — Child chunks → MongoDB (text + tokens for BM25, NO embedding field)
             child_records = [
                 {
-                    "chunk_id": child["child_id"],
-                    "parent_id": child["parent_id"],
-                    "document_id": document_id,
-                    "document_name": filename,
-                    "text": child["text"],
-                    "tokens": re.findall(r'\w+', child["text"].lower()),
-                    "page_number": child["page_number"],
-                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "chunk_id":        child["child_id"],
+                    "parent_id":       child["parent_id"],
+                    "document_id":     document_id,
+                    "document_name":   filename,
+                    "text":            child["text"],
+                    "tokens":          re.findall(r'\w+', child["text"].lower()),
+                    "page_number":     child["page_number"],
+                    "clearance_level": clearance_level,
+                    "department":      department,
+                    "effective_date":  effective_date,
+                    "expiry_date":     expiry_date,
+                    "doc_status":      "Active",
+                    "created_at":      datetime.now(timezone.utc).isoformat(),
                 }
                 for child in children
             ]
@@ -470,12 +497,18 @@ class DocumentProcessor:
             # 7c — Vectors → Qdrant (ANN index for fast vector similarity search)
             qdrant_records = [
                 {
-                    "chunk_id":      child["child_id"],
-                    "parent_id":     child["parent_id"],
-                    "document_id":   document_id,
-                    "document_name": filename,
-                    "page_number":   child["page_number"],
-                    "embedding":     embedding,
+                    "chunk_id":        child["child_id"],
+                    "parent_id":       child["parent_id"],
+                    "document_id":     document_id,
+                    "document_name":   filename,
+                    "page_number":     child["page_number"],
+                    "embedding":       embedding,
+                    # Banking compliance payload stored in Qdrant for pre-filtering
+                    "clearance_level": clearance_level,
+                    "department":      department,
+                    "effective_date":  effective_date,
+                    "expiry_date":     expiry_date,
+                    "doc_status":      "Active",
                 }
                 for child, embedding in zip(children, embeddings)
             ]
