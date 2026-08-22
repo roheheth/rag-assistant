@@ -47,29 +47,64 @@ def load_chats():
 
 # Sidebar
 with st.sidebar:
-    st.title("🧠 RAG Assistant")
+    st.title("🧠 NatWest RAG Assistant")
+
+    # ── Simulated User Profile (RBAC Controls) ───────────────────────
+    st.header("Simulate User Profile")
+    sim_role = st.selectbox(
+        "User Role",
+        ["Teller", "Manager", "Executive", "Admin"],
+        index=0,
+        help="Controls access based on document clearance level: Teller=Public, Manager=Public/Internal, Executive/Admin=All"
+    )
+    sim_dept = st.selectbox(
+        "User Department",
+        ["Retail", "Lending", "Compliance", "Wealth"],
+        index=0
+    )
+
+    st.divider()
     
+    # ── Upload Document Section with Banking Metadata ───────────────
     st.header("Upload Document")
     uploaded_file = st.file_uploader("Drop document here", type=["pdf", "xlsx", "xls", "docx", "doc"])
+    
     if uploaded_file is not None:
         file_sig = uploaded_file.name
+        
+        # Metadata inputs
+        st.subheader("Document Metadata")
+        clearance = st.selectbox("Clearance Level", ["Public", "Internal", "Restricted"], index=1)
+        doc_dept = st.selectbox("Document Department", ["Retail", "Lending", "Compliance", "Wealth"], index=0)
+        
+        import datetime
+        eff_date = st.date_input("Effective Date", datetime.date.today())
+        exp_date = st.date_input("Expiry Date", datetime.date(2099, 12, 31))
+
         if file_sig not in st.session_state.processed_files:
-            with st.spinner("Uploading file..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-                try:
-                    res = requests.post(f"{API_BASE_URL}/upload", files=files)
-                    if res.status_code == 200:
-                        st.success(f"Uploaded {uploaded_file.name}! Processing in background.")
-                        st.session_state.processed_files.add(file_sig)
-                        st.rerun()  # Rerun to unlock chat screen immediately
-                    else:
-                        try:
-                            err = res.json().get('detail', 'Upload failed')
-                        except Exception:
-                            err = f"Status {res.status_code}: {res.text}"
-                        st.error(f"Backend Error: {err}")
-                except Exception as e:
-                    st.error(f"Failed to connect to backend: {e}")
+            if st.button("🚀 Process & Index Document"):
+                with st.spinner("Uploading file..."):
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    params = {
+                        "clearance_level": clearance,
+                        "department": doc_dept,
+                        "effective_date": eff_date.isoformat(),
+                        "expiry_date": exp_date.isoformat()
+                    }
+                    try:
+                        res = requests.post(f"{API_BASE_URL}/upload", files=files, params=params)
+                        if res.status_code == 200:
+                            st.success(f"Uploaded {uploaded_file.name}! Processing in background.")
+                            st.session_state.processed_files.add(file_sig)
+                            st.rerun()
+                        else:
+                            try:
+                                err = res.json().get('detail', 'Upload failed')
+                            except Exception:
+                                err = f"Status {res.status_code}: {res.text}"
+                            st.error(f"Backend Error: {err}")
+                    except Exception as e:
+                        st.error(f"Failed to connect to backend: {e}")
         else:
             st.success(f"✓ {uploaded_file.name} is uploaded!")
 
@@ -147,7 +182,11 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         message_placeholder.markdown("Thinking...")
         
         try:
-            payload = {"question": prompt}
+            payload = {
+                "question": prompt,
+                "user_role": sim_role,
+                "user_department": sim_dept
+            }
             if st.session_state.chat_id:
                 payload["chat_id"] = st.session_state.chat_id
                 
