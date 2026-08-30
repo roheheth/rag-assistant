@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     SUMMARY_MAX_TOKENS: int = 256
     CONTEXT_SUMMARY_MAX_TOKENS: int = 300
 
+    # ── Deployment & Security ──────────────────────────────────
+    # Valid values: "dev" | "production"
+    # In production mode ALL requests must carry a valid Bearer token.
+    DEPLOYMENT_MODE: str = "dev"
+
+    # JSON string mapping bearer-token → {"role": str, "department": str}
+    # Example: {"secret-abc": {"role": "Teller", "department": "Retail"}}
+    USERS_TOKEN_MAP: str = "{}"
+
     # ── App ───────────────────────────────────────────────────────
     UPLOAD_DIR: str = "uploads"
 

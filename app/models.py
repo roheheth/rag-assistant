@@ -12,6 +12,18 @@ from typing import Optional, List
 from datetime import date
 
 
+# ── Identity (server-side resolved, never from client) ────────────────────
+
+class UserIdentity(BaseModel):
+    """Resolved identity derived from a server-side Bearer token lookup.
+    This is the authoritative source of role/department for every request.
+    Values here can NEVER be overridden by client request body fields.
+    """
+    role: str
+    department: str
+    token: str = "dev-default"
+
+
 # ── RBAC Role Constants ────────────────────────────────────────────────
 ROLES = ["Teller", "Manager", "Executive", "Admin"]
 

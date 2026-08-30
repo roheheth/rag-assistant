@@ -15,13 +15,14 @@ import os
 import uuid
 import shutil
 from datetime import datetime, date, timezone
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Query, Depends
 from contextlib import asynccontextmanager
 from app.config import settings
 from app.database import connect_to_mongo, close_mongo_connection, get_db
 from app.document_processor import document_processor
 from app.rag_pipeline import rag_pipeline
 from app.qdrant_service import qdrant_service
+from app.auth import get_current_user, UserIdentity
 from app.models import (
     QuestionRequest,
     AnswerResponse,
@@ -78,11 +79,13 @@ async def root():
 async def upload_document(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = BackgroundTasks(),
-    # ── Banking Compliance Metadata ──────────────────────────────────
+    # ── Banking Compliance Metadata ─────────────────────────────────
     clearance_level: str = Query(default="Internal", description="Document clearance level: Public, Internal, Restricted"),
     department: str = Query(default="Retail", description="Originating department: Retail, Lending, Compliance, Wealth"),
     effective_date: Optional[str] = Query(default=None, description="Date document becomes active (ISO: YYYY-MM-DD)"),
     expiry_date: Optional[str] = Query(default=None, description="Date document expires (ISO: YYYY-MM-DD)"),
+    # ── Server-side identity (derived from Bearer token) ─────────────
+    current_user: UserIdentity = Depends(get_current_user),
 ):
     """Upload and process a document into the knowledge base in the background."""
     if not file.filename or not file.filename.lower().endswith((".pdf", ".xlsx", ".xls", ".docx", ".doc")):
@@ -184,13 +187,37 @@ async def delete_document(document_id: str):
     }
 
 
+# ── /api/me — read-only identity probe ─────────────────────────────────────
+
+@app.get("/api/me")
+async def get_me(current_user: UserIdentity = Depends(get_current_user)):
+    """Return the server-resolved identity for the caller.
+    Used by the Streamlit UI (in production mode) to display a read-only
+    role badge. The role/department here come from the Bearer token,
+    never from the request body.
+    """
+    return {
+        "role":       current_user.role,
+        "department": current_user.department,
+        "mode":       settings.DEPLOYMENT_MODE,
+    }
+
+
 from fastapi.responses import StreamingResponse
 
-# ── Question / Answer Endpoints ───────────────────────────────────
+# ── Question / Answer Endpoints ──────────────────────────────────
 
 @app.post("/api/ask")
-async def ask_question(request: QuestionRequest):
-    """Ask a question against the knowledge base (Streaming SSE)."""
+async def ask_question(
+    request: QuestionRequest,
+    current_user: UserIdentity = Depends(get_current_user),
+):
+    """Ask a question against the knowledge base (Streaming SSE).
+
+    SECURITY: role and department are derived EXCLUSIVELY from the server-side
+    Bearer token lookup (current_user). The user_role / user_department fields
+    in the request body are intentionally IGNORED to prevent role self-elevation.
+    """
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
@@ -200,8 +227,9 @@ async def ask_question(request: QuestionRequest):
             rag_pipeline.ask_stream(
                 question=request.question.strip(),
                 chat_id=request.chat_id,
-                user_role=request.user_role,
-                user_department=request.user_department,
+                # ⚠️ Always use server-resolved identity, never request.user_role
+                user_role=current_user.role,
+                user_department=current_user.department,
             ),
             media_type="text/event-stream"
         )

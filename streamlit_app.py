@@ -4,11 +4,32 @@ import os
 
 API_BASE_URL = "http://localhost:8000/api"
 
+# ── Deployment Mode & Auth Config ───────────────────────────────────
+DEPLOYMENT_MODE = os.environ.get("DEPLOYMENT_MODE", "dev").lower()
+# In production the UI reads the Bearer token from the STREAMLIT_AUTH_TOKEN env var.
+# In dev mode this can be left empty and the dropdown selection is used instead.
+AUTH_TOKEN = os.environ.get("STREAMLIT_AUTH_TOKEN", "")
+
+def _auth_headers() -> dict:
+    """Return Authorization header dict for all backend requests."""
+    if AUTH_TOKEN:
+        return {"Authorization": f"Bearer {AUTH_TOKEN}"}
+    return {}
+
 st.set_page_config(
-    page_title="RAG Assistant",
+    page_title="NatWest RAG Assistant",
     page_icon="🧠",
     layout="wide"
 )
+
+# ── Dev Mode Banner ──────────────────────────────────────────────
+if DEPLOYMENT_MODE == "dev":
+    st.warning(
+        "⚠️ **DEV MODE — RBAC SIMULATED, NOT ENFORCED.** "
+        "Role/department dropdowns below are for local testing only. "
+        "This banner must never appear in a production deployment.",
+        icon="🚨"
+    )
 
 # Initialize Session State
 if "chat_id" not in st.session_state:
@@ -17,10 +38,13 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "processed_files" not in st.session_state:
     st.session_state.processed_files = set()
+# Cache the server-resolved identity (production mode)
+if "server_identity" not in st.session_state:
+    st.session_state.server_identity = None
 
 def load_stats():
     try:
-        res = requests.get(f"{API_BASE_URL}/stats")
+        res = requests.get(f"{API_BASE_URL}/stats", headers=_auth_headers())
         if res.status_code == 200:
             return res.json()
     except Exception:
@@ -29,7 +53,7 @@ def load_stats():
 
 def load_documents():
     try:
-        res = requests.get(f"{API_BASE_URL}/documents")
+        res = requests.get(f"{API_BASE_URL}/documents", headers=_auth_headers())
         if res.status_code == 200:
             return res.json()
     except Exception:
@@ -38,7 +62,7 @@ def load_documents():
 
 def load_chats():
     try:
-        res = requests.get(f"{API_BASE_URL}/chats")
+        res = requests.get(f"{API_BASE_URL}/chats", headers=_auth_headers())
         if res.status_code == 200:
             return res.json()
     except Exception:
@@ -49,19 +73,43 @@ def load_chats():
 with st.sidebar:
     st.title("🧠 NatWest RAG Assistant")
 
-    # ── Simulated User Profile (RBAC Controls) ───────────────────────
-    st.header("Simulate User Profile")
-    sim_role = st.selectbox(
-        "User Role",
-        ["Teller", "Manager", "Executive", "Admin"],
-        index=0,
-        help="Controls access based on document clearance level: Teller=Public, Manager=Public/Internal, Executive/Admin=All"
-    )
-    sim_dept = st.selectbox(
-        "User Department",
-        ["Retail", "Lending", "Compliance", "Wealth"],
-        index=0
-    )
+    # ── User Profile ─────────────────────────────────────────────
+    if DEPLOYMENT_MODE == "production":
+        # ── Production: fetch server-resolved identity from /api/me
+        if st.session_state.server_identity is None:
+            try:
+                me_res = requests.get(
+                    f"{API_BASE_URL}/me", headers=_auth_headers(), timeout=3
+                )
+                if me_res.status_code == 200:
+                    st.session_state.server_identity = me_res.json()
+            except Exception:
+                pass
+
+        identity = st.session_state.server_identity or {}
+        sim_role = identity.get("role", "Unknown")
+        sim_dept = identity.get("department", "Unknown")
+
+        st.header("User Profile")
+        st.info(
+            f"👤 **Role:** {sim_role}  \n"
+            f"🏢 **Department:** {sim_dept}  \n"
+            f"*Identity verified via Bearer token.*"
+        )
+    else:
+        # ── Dev mode: keep simulated dropdowns
+        st.header("Simulate User Profile")
+        sim_role = st.selectbox(
+            "User Role",
+            ["Teller", "Manager", "Executive", "Admin"],
+            index=0,
+            help="DEV ONLY — In production, role is derived from the Bearer token."
+        )
+        sim_dept = st.selectbox(
+            "User Department",
+            ["Retail", "Lending", "Compliance", "Wealth"],
+            index=0
+        )
 
     st.divider()
     
@@ -92,7 +140,12 @@ with st.sidebar:
                         "expiry_date": exp_date.isoformat()
                     }
                     try:
-                        res = requests.post(f"{API_BASE_URL}/upload", files=files, params=params)
+                        res = requests.post(
+                            f"{API_BASE_URL}/upload",
+                            files=files,
+                            params=params,
+                            headers=_auth_headers()
+                        )
                         if res.status_code == 200:
                             st.success(f"Uploaded {uploaded_file.name}! Processing in background.")
                             st.session_state.processed_files.add(file_sig)
@@ -190,7 +243,12 @@ if prompt := st.chat_input("Ask a question about your documents..."):
             if st.session_state.chat_id:
                 payload["chat_id"] = st.session_state.chat_id
                 
-            res = requests.post(f"{API_BASE_URL}/ask", json=payload, stream=True)
+            res = requests.post(
+                f"{API_BASE_URL}/ask",
+                json=payload,
+                headers=_auth_headers(),
+                stream=True
+            )
             
             if res.status_code == 200:
                 import json
