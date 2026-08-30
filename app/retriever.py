@@ -155,7 +155,8 @@ class Retriever:
         parent_cursor = db.parent_chunks.find(
             {"parent_id": {"$in": seen_parent_ids}},
             {"_id": 0, "parent_id": 1, "text": 1, "document_name": 1,
-             "document_id": 1, "page_number": 1},
+             "document_id": 1, "page_number": 1,
+             "effective_date": 1, "doc_status": 1},
         )
         parent_docs = await parent_cursor.to_list(length=None)
         parent_map = {p["parent_id"]: p for p in parent_docs}
@@ -173,6 +174,9 @@ class Retriever:
                 "page_number":       parent.get("page_number"),
                 "score":             best_score_for_parent[parent_id],
                 "vector_similarity": best_vector_similarity[parent_id],
+                # Banking compliance metadata for citations
+                "effective_date":    parent.get("effective_date", ""),
+                "doc_status":        parent.get("doc_status", "Active"),
             })
 
         logger.info(
