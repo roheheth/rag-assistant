@@ -7,13 +7,26 @@ Flow for each question:
   3. Intent routing (document question vs. conversation)
   4. Retrieve relevant chunks via hybrid search (RBAC + date filtered)
   5. ABSTENTION GATE #1: if retrieval returns nothing → hardcoded abstain
-  6. Stream full answer from LLM (buffered for groundedness check)
+  6. Buffer full LLM response (groundedness check before any yield)
   7. ABSTENTION GATE #2: if response has no overlap with context → abstain
-  8. Yield answer tokens (or abstention message) to the SSE client
-  9. Generate summary and update rolling context in MongoDB
+  8. Validate LLM inline [N] markers — drop any that reference a chunk
+     index outside the range of what was actually passed to the prompt
+  9. Build server-side Sources block from retrieved chunk metadata
+ 10. Yield answer token stream as SSE 'chunk' events
+ 11. Yield the verified Sources list as a distinct SSE 'sources' event
+ 12. Generate summary and update rolling context in MongoDB
 
 Abstention events are always logged to the `retrieval_gaps` collection
 so the compliance team can run periodic content-gap reports.
+
+Citation contract:
+  • LLM writes inline [N] markers only — no document names / dates / pages.
+  • Server builds the Sources block exclusively from retrieved chunk metadata.
+  • Any [N] marker referencing a non-existent chunk index is silently dropped
+    (logged as WARNING for prompt-following quality monitoring).
+  • The Sources block is transmitted as a separate structured SSE event
+    (type='sources') AFTER the token stream completes, so the client can
+    render it as a rich component rather than parsing free text.
 """
 
 import re
@@ -21,7 +34,7 @@ import json
 import logging
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 
 try:
     from pyinstrument import Profiler
@@ -38,20 +51,12 @@ logger = logging.getLogger(__name__)
 
 # ── Abstention constants ──────────────────────────────────────────────────────
 
-# The single canonical message shown to the user on any abstention.
-# It is HARDCODED here — the LLM never generates or modifies this string.
 ABSTENTION_MESSAGE = (
     "I don't have sufficient information in approved sources to answer this. "
     "This may mean no policy document covers this topic, or you may not have "
     "clearance to view relevant documents."
 )
-
-# Sentinel string the LLM is instructed to emit when it cannot ground an answer.
-# We check for its presence in the buffered response as a secondary signal.
 LLM_ABSTAIN_SENTINEL = "NATWEST_ABSTAIN:"
-
-# Minimum fraction of unique 4+ character chunk tokens that must appear in the
-# LLM response for it to be considered grounded. 0.10 = 10%.
 GROUNDEDNESS_THRESHOLD = 0.10
 
 
@@ -64,18 +69,12 @@ def _extract_tokens(text: str) -> set:
 
 def check_groundedness(response: str, retrieved_chunks: list) -> bool:
     """
-    Return True if the LLM response is sufficiently grounded in the
-    retrieved context.
+    Return True if the LLM response is sufficiently grounded.
 
-    Two signals are combined:
-      1. Lexical overlap: fraction of unique chunk tokens that also appear
-         in the response must meet GROUNDEDNESS_THRESHOLD.
-      2. Sentinel check: if the LLM emitted NATWEST_ABSTAIN it is treating
-         the context as insufficient — we honour that judgment.
-
-    A response that fails either check is considered ungrounded.
+    Fails (ungrounded) when:
+      • The LLM emitted the NATWEST_ABSTAIN sentinel.
+      • Lexical overlap between response and chunk text < GROUNDEDNESS_THRESHOLD.
     """
-    # If the LLM itself flagged abstention, honour it immediately.
     if LLM_ABSTAIN_SENTINEL in response:
         logger.info("🔍 Groundedness: LLM emitted abstain sentinel → ungrounded")
         return False
@@ -87,7 +86,7 @@ def check_groundedness(response: str, retrieved_chunks: list) -> bool:
     chunk_tokens = _extract_tokens(chunk_text)
 
     if not chunk_tokens:
-        return True     # nothing to check against; give benefit of doubt
+        return True
 
     response_tokens = _extract_tokens(response)
     overlap = len(chunk_tokens & response_tokens) / len(chunk_tokens)
@@ -98,6 +97,72 @@ def check_groundedness(response: str, retrieved_chunks: list) -> bool:
         f"(threshold={GROUNDEDNESS_THRESHOLD}) → {'grounded' if is_grounded else 'UNGROUNDED'}"
     )
     return is_grounded
+
+
+# ── Server-side citation helpers ──────────────────────────────────────────────
+
+def validate_inline_markers(response: str, chunk_count: int) -> str:
+    """
+    Scan the LLM response for inline [N] markers and drop any whose index
+    falls outside [1, chunk_count].
+
+    A marker is valid if 1 <= N <= chunk_count.  Invalid markers are
+    removed from the text and logged as warnings (they indicate that the
+    model is hallucinating source references that don't exist).
+
+    Args:
+        response:    The raw LLM output text.
+        chunk_count: Number of context chunks that were passed to the LLM.
+
+    Returns:
+        Cleaned response text with invalid markers stripped.
+    """
+    def _check_marker(match: re.Match) -> str:
+        n = int(match.group(1))
+        if 1 <= n <= chunk_count:
+            return match.group(0)          # keep it
+        logger.warning(
+            f"⚠️ [Citation] LLM referenced [Source {n}] but only "
+            f"{chunk_count} chunk(s) were passed — dropping marker."
+        )
+        return ""                          # silently drop it
+
+    # Match [N] where N is a 1-3 digit integer
+    cleaned = re.sub(r'\[(\d{1,3})\]', _check_marker, response)
+    return cleaned
+
+
+def build_sources_block(retrieved_chunks: List[dict]) -> List[dict]:
+    """
+    Build the authoritative Sources list **entirely** from the metadata of
+    the chunks that were actually passed into the LLM prompt.
+
+    This is the ONLY source of truth for citations — the LLM's text output
+    is never parsed for document names, pages, dates, or status values.
+
+    Returns a list of dicts, each with:
+        index        — 1-based integer matching the [N] marker
+        document_name
+        page_number
+        effective_date
+        doc_status
+        relevance_score
+        snippet      — first 200 chars of chunk text for UI preview
+    """
+    sources = []
+    for i, chunk in enumerate(retrieved_chunks, start=1):
+        sources.append({
+            "index":          i,
+            "document_name":  chunk.get("document_name", "Unknown Document"),
+            "page_number":    chunk.get("page_number"),
+            "effective_date": chunk.get("effective_date", ""),
+            "doc_status":     chunk.get("doc_status", "Active"),
+            "relevance_score": round(chunk.get("score", 0.0), 4),
+            "snippet":        chunk.get("text", "")[:200].rstrip() + "…"
+                              if len(chunk.get("text", "")) > 200
+                              else chunk.get("text", ""),
+        })
+    return sources
 
 
 # ── RAG Pipeline ─────────────────────────────────────────────────────────────
@@ -115,11 +180,14 @@ class RAGPipeline:
         """
         Process a user question and stream the response via SSE.
 
-        Two hard abstention gates protect against hallucination:
-          Gate 1 — No candidates returned after retrieval + RRF + threshold.
-          Gate 2 — LLM response has insufficient overlap with retrieved context.
+        SSE event types emitted (in order):
+          metadata — {type, chat_id, turn_number}        (no sources here)
+          chunk    — {type, content}  × N                (answer tokens)
+          sources  — {type, sources: [...]}               (after stream done)
+          done     — {type}                               (terminal sentinel)
 
-        Both gates log to `retrieval_gaps` for compliance review.
+        Two hard abstention gates protect against hallucination.
+        Citations are built server-side and sent as the 'sources' event.
         """
         USE_PYINSTRUMENT = Profiler is not None
         start_time = time.time()
@@ -156,11 +224,6 @@ class RAGPipeline:
             )
 
             # ── ABSTENTION GATE 1: Empty retrieval ──────────────────────
-            # This fires when:
-            #   • No documents are indexed yet.
-            #   • No chunk cleared the RBAC + date + similarity filters.
-            #   • The topic is not covered by any ingested document.
-            # The LLM is NEVER called in this path.
             if not retrieved_chunks:
                 logger.warning(
                     f"🚫 [Abstention/Gate1] No candidates — role={user_role} "
@@ -172,15 +235,13 @@ class RAGPipeline:
                     department=user_department or "Unknown",
                     reason=REASON_NO_CANDIDATES,
                 )
-                _no_candidate_meta = json.dumps({
-                    "type": "metadata",
-                    "chat_id": chat_id,
-                    "sources": [],
-                    "turn_number": turn_count,
-                })
-                yield f"data: {_no_candidate_meta}\n\n"
-                _abstain_chunk = json.dumps({"type": "chunk", "content": ABSTENTION_MESSAGE})
-                yield f"data: {_abstain_chunk}\n\n"
+                _meta = json.dumps({"type": "metadata", "chat_id": chat_id, "turn_number": turn_count})
+                yield f"data: {_meta}\n\n"
+                _abstain = json.dumps({"type": "chunk", "content": ABSTENTION_MESSAGE})
+                yield f"data: {_abstain}\n\n"
+                _empty_sources = json.dumps({"type": "sources", "sources": []})
+                yield f"data: {_empty_sources}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 await context_manager.update_context(
                     chat_id, question, ABSTENTION_MESSAGE, ABSTENTION_MESSAGE
                 )
@@ -189,31 +250,11 @@ class RAGPipeline:
             logger.info("Router: conversational intent — bypassing document search")
             retrieved_chunks = []
 
-        # ── 5. Build source citations ───────────────────────────────────
-        sources = [
-            Source(
-                text=chunk["text"][:300] + "…" if len(chunk["text"]) > 300 else chunk["text"],
-                document_name=chunk["document_name"],
-                page_number=chunk.get("page_number"),
-                relevance_score=round(chunk["score"], 4),
-                effective_date=chunk.get("effective_date", ""),
-                doc_status=chunk.get("doc_status", "Active"),
-            )
-            for chunk in retrieved_chunks
-        ]
+        # ── 5. Yield metadata (no sources yet — they come after the stream) ─
+        _meta = json.dumps({"type": "metadata", "chat_id": chat_id, "turn_number": turn_count})
+        yield f"data: {_meta}\n\n"
 
-        # ── 6. Yield metadata first ─────────────────────────────────────
-        _meta_payload = json.dumps({
-            "type":        "metadata",
-            "chat_id":     chat_id,
-            "sources":     [s.model_dump() for s in sources],
-            "turn_number": turn_count,
-        })
-        yield f"data: {_meta_payload}\n\n"
-
-        # ── 7. Buffer full LLM response (needed for groundedness check) ─
-        # We collect all tokens before yielding any to the client so that
-        # we can intercept an ungrounded response before it reaches the user.
+        # ── 6. Buffer full LLM response ─────────────────────────────────
         full_answer = ""
         first_token_time: Optional[float] = None
 
@@ -224,7 +265,6 @@ class RAGPipeline:
             full_answer += token
 
         # ── ABSTENTION GATE 2: Groundedness check ──────────────────────
-        # Only applies when we had context to check against.
         if retrieved_chunks and not check_groundedness(full_answer, retrieved_chunks):
             logger.warning(
                 f"🚫 [Abstention/Gate2] Ungrounded response — role={user_role} "
@@ -236,17 +276,33 @@ class RAGPipeline:
                 department=user_department or "Unknown",
                 reason=REASON_UNGROUNDED,
             )
-            # Replace LLM output with the hardcoded abstention message.
             full_answer = ABSTENTION_MESSAGE
 
-        # ── 8. Stream the (validated) answer to the client ─────────────
-        # Yield in ~80-character chunks to preserve a token-stream feel.
+        # ── 7. Validate and clean LLM inline markers ────────────────────
+        # Only run when we have context chunks to validate against.
+        # Abstention responses pass through unchanged (they have no markers).
+        if retrieved_chunks and full_answer != ABSTENTION_MESSAGE:
+            full_answer = validate_inline_markers(full_answer, len(retrieved_chunks))
+
+        # ── 8. Stream answer tokens to the client ──────────────────────
         CHUNK_SIZE = 80
         for i in range(0, len(full_answer), CHUNK_SIZE):
-            _chunk_payload = json.dumps({"type": "chunk", "content": full_answer[i:i + CHUNK_SIZE]})
-            yield f"data: {_chunk_payload}\n\n"
+            _chunk = json.dumps({"type": "chunk", "content": full_answer[i:i + CHUNK_SIZE]})
+            yield f"data: {_chunk}\n\n"
 
-        # ── 9. Summary + context update ─────────────────────────────────
+        # ── 9. Build and emit server-side Sources block ─────────────────
+        # Sources come AFTER the token stream so the client can render
+        # them as a rich structured component, not parse them from text.
+        # Source metadata comes exclusively from retrieved_chunks —
+        # nothing the LLM output said is used here.
+        verified_sources = build_sources_block(retrieved_chunks)
+        _sources_payload = json.dumps({"type": "sources", "sources": verified_sources})
+        yield f"data: {_sources_payload}\n\n"
+
+        # Terminal sentinel — lets the client know the stream is complete
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        # ── 10. Summary + context update ────────────────────────────────
         if not retrieved_chunks:
             summary_answer = full_answer
         else:
@@ -260,7 +316,10 @@ class RAGPipeline:
         )
 
         total_time = time.time() - start_time
-        logger.info(f"✓ Done | chat_id={chat_id} | total={total_time:.3f}s")
+        logger.info(
+            f"✓ Done | chat_id={chat_id} | sources={len(verified_sources)} | "
+            f"total={total_time:.3f}s"
+        )
 
         if USE_PYINSTRUMENT:
             profiler.stop()
@@ -270,7 +329,7 @@ class RAGPipeline:
                 with open("profiles/streaming_profile.html", "w", encoding="utf-8") as f:
                     f.write(html)
             except Exception:
-                pass  # Never let profiler I/O crash the pipeline
+                pass
 
 
 rag_pipeline = RAGPipeline()
